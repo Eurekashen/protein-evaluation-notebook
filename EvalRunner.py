@@ -85,9 +85,9 @@ class EvalRunner:
 
     def pdbTM(
         self,
-        input: Union[str, Path],
-        foldseek_database_path: Union[str, Path],
-        process_id: int,
+        input: Union[str, Path] = None,
+        foldseek_database_path: Union[str, Path] = self._foldseek_database,
+        process_id: int = 0,
         save_tmp: bool = False,
         foldseek_path: Optional[Union[Path, str]] = None,
     ) -> Union[float, dict]:
@@ -366,8 +366,7 @@ class EvalRunner:
         )
         print("Calculating novelty (pdbTM)...")
         # calculate novelty (pdbTM)
-        foldseek_database = self._foldseek_database
-        value = self.pdbTM(pdb_path, foldseek_database, 1)
+        value = self.pdbTM(pdb_path, self._foldseek_database, 1)
         print(
             f"TM-Score between {os.path.basename(pdb_path)} and its closest protein in PDB is {value}."
         )
