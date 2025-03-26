@@ -1,0 +1,1 @@
+python ProteinMPNN/helper_scripts/parse_multiple_chains.py --input_path=/home/shuaikes/server2/shuaikes/projects/protein-evaluation-notebook/example_data/length_70/sample_0/sample.pdb    --output_path=/home/shuaikes/server2/shuaikes/projects/protein-evaluation-notebook/example_data/length_70/sample_0/self_consistency/parsed_pdbs.jsonl

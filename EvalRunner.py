@@ -43,41 +43,33 @@ class EvalRunner:
         torch.hub.set_dir(self._conf.pt_hub_dir)
 
         # Set-up accelerator
-        # if torch.cuda.is_available():
-        #     available_gpus = "".join(
-        #         [str(x) for x in GPUtil.getAvailable(order="memory", limit=8)]
-        #     )
-        #     self.device = f"cuda:{available_gpus[0]}"
-        # else:
-        #     self.device = "cpu"
+        if torch.cuda.is_available():
+            available_gpus = "".join(
+                [str(x) for x in GPUtil.getAvailable(order="memory", limit=8)]
+            )
+            self.device = f"cuda:{available_gpus[0]}"
+        else:
+            self.device = "cpu"
 
-        self.device = "cpu"
 
         self._log.info(f"Using device: {self.device}")
 
         self._pmpnn_dir = self._conf.pmpnn_dir
+        self._foldseek_database = self._conf.foldseek_database
 
         # Load ESMFold model
-        # self._folding_model = esm.pretrained.esmfold_v1().eval()
-        # self._folding_model = self._folding_model.to(self.device)
+        self._folding_model = esm.pretrained.esmfold_v1().eval()
+        self._folding_model = self._folding_model.to(self.device)
 
-        self._foldseek_database = self._conf.foldseek_database
 
     def _calc_bb_rmsd(self, mask, sample_bb_pos, folded_bb_pos):
         aligned_rmsd = superimpose(
-            torch.tensor(sample_bb_pos)[None],
-            torch.tensor(folded_bb_pos[None]),
-            mask[:, None].repeat(1, 3).reshape(-1),
+            torch.tensor(sample_bb_pos),
+            torch.tensor(folded_bb_pos),
+            mask.unsqueeze(1).repeat(1, 3).T,
         )
         return aligned_rmsd[1].item()
 
-    def _calc_ca_rmsd(self, mask, sample_bb_pos, folded_bb_pos):
-        aligned_rmsd = superimpose(
-            torch.tensor(sample_bb_pos)[None],
-            torch.tensor(folded_bb_pos[None]),
-            mask.reshape(-1),
-        )
-        return aligned_rmsd[1].item()
 
     def calc_tm_score(self, pos_1, pos_2, seq_1, seq_2):
         tm_results = tm_align(pos_1, pos_2, seq_1, seq_2)
@@ -86,7 +78,6 @@ class EvalRunner:
     def pdbTM(
         self,
         input: Union[str, Path] = None,
-        foldseek_database_path: Union[str, Path] = self._foldseek_database,
         process_id: int = 0,
         save_tmp: bool = False,
         foldseek_path: Optional[Union[Path, str]] = None,
@@ -112,6 +103,8 @@ class EvalRunner:
         Returns:
         `top_pdbTM`: The highest pdbTM value among the top three targets hit by Foldseek.
         """
+        foldseek_database_path = self._foldseek_database
+        
         # Handling multiprocessing
         base_tmp_path = "./tmp/"
         tmp_path = os.path.join(base_tmp_path, f"process_{process_id}")
@@ -286,6 +279,7 @@ class EvalRunner:
         # Run ESMFold on each ProteinMPNN sequence and calculate metrics.
         mpnn_results = {
             "tm_score": [],
+            "bb_rmsd": [],
             "sample_path": [],
             "header": [],
             "sequence": [],
@@ -315,23 +309,23 @@ class EvalRunner:
 
             res_mask = torch.ones(sample_feats["bb_positions"].shape[0])
 
+            # print(res_mask.shape)
+            # print(sample_feats["bb_positions"].shape)
+            # print(esmf_feats["bb_positions"].shape)
+            
             bb_rmsd = self._calc_bb_rmsd(
-                res_mask, sample_feats["bb_positions"], esmf_feats["bb_positions"]
-            )
-            ca_rmsd = self._calc_ca_rmsd(
                 res_mask, sample_feats["bb_positions"], esmf_feats["bb_positions"]
             )
 
             mpnn_results["tm_score"].append(tm_score)
             mpnn_results["bb_rmsd"].append(bb_rmsd)
-            mpnn_results["ca_rmsd"].append(ca_rmsd)
             mpnn_results["sample_path"].append(esmf_sample_path)
             mpnn_results["header"].append(header)
             mpnn_results["sequence"].append(string)
 
         # Save results to CSV
         csv_path = os.path.join(decoy_pdb_dir, "sc_results.csv")
-        print(mpnn_results)
+        # print(mpnn_results)
         mpnn_results = pd.DataFrame(mpnn_results)
         mpnn_results.to_csv(csv_path)
 
@@ -366,10 +360,14 @@ class EvalRunner:
         )
         print("Calculating novelty (pdbTM)...")
         # calculate novelty (pdbTM)
-        value = self.pdbTM(pdb_path, self._foldseek_database, 1)
+        value = self.pdbTM(pdb_path, 1)
         print(
             f"TM-Score between {os.path.basename(pdb_path)} and its closest protein in PDB is {value}."
         )
+        print(
+            "##########################################################################"
+        )
+        
 
     def run_folding(self, sequence, save_path):
         """Run ESMFold on sequence."""
@@ -380,8 +378,8 @@ class EvalRunner:
             f.write(output)
         return output
 
-    def calc_metrics_from_csv(self, pdb_csv_path):
-        """Get designability reward from csv file.
+    def calc_diversity(self, pdb_csv_path):
+        """Get diversity from csv file.
 
         pdb_csv_path : str
             Path to the csv file containing the pdb paths
@@ -390,29 +388,6 @@ class EvalRunner:
         df = pd.read_csv(pdb_csv_path, header=None)
 
         pdb_path_list = df[0].tolist()
-
-        # calculate self-consistency score
-        sc_results = []
-        for pdb_path in tqdm(pdb_path_list):
-            sc_output_dir = os.path.join(pdb_path, "self_consistency")
-            os.makedirs(sc_output_dir, exist_ok=True)
-            sc_results.append(self.calc_designability(sc_output_dir, pdb_path))
-
-        # calculate substructure ratio
-        sub_ratio = []
-        for pdb_path in tqdm(pdb_path_list):
-            sub_ratio.append(self.calc_mdtraj_metrics(pdb_path))
-
-        # calculate novelty (pdbTM)
-        novelty_result = []
-        process_id = 0
-        for pdb_path in tqdm(pdb_path_list):
-            novelty_result.append(
-                self.pdbTM(pdb_path, self._foldseek_database, process_id)
-            )
-            process_id += 1
-
-        # designable file path (scRMSD<2)
 
         # log_msg("Running clustering")
         cluster_dir = os.path.join(Path(pdb_csv_path).parent, "cluster")
@@ -425,7 +400,7 @@ class EvalRunner:
 
         clusters = self.run_max_cluster(designable_file_path, cluster_dir)
 
-        return sc_results, sub_ratio, novelty_result, clusters
+        return clusters
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="evaluation")
@@ -440,11 +415,8 @@ def run(conf: DictConfig) -> None:
     EvalModel = EvalRunner(conf)
     # EvalModel.calc_all_metrics(sc_output_dir, pdb_path)
 
-    # run reward model based on csv file
-    pdb_csv_path = "/home/shuaikes/Project/protein-evaluation-notebook/pdb_path.csv"
-    sc_results, sub_ratio, novelty_result, clusters = EvalModel.calc_metrics_from_csv(
-        pdb_csv_path
-    )
+    pdb_csv_path = "/home/shuaikes/server2/shuaikes/projects/protein-evaluation-notebook/pdb_path.csv"
+    clusters = EvalModel.calc_diversity(pdb_csv_path)
 
 
 if __name__ == "__main__":

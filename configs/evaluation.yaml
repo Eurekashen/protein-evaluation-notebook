@@ -1,4 +1,4 @@
 pt_hub_dir: ./.cache/torch/
 pmpnn_dir: ./ProteinMPNN/
 seed: 42
-foldseek_database: /home/shuaikes/Project/protein-evaluation-notebook/foldseek_database/pdb
+foldseek_database: /home/shuaikes/server2/shuaikes/projects/protein-evaluation-notebook/foldseek_database/pdb

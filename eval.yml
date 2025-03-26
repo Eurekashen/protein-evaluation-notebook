@@ -1,0 +1,39 @@
+name: eval_notebook
+channels:
+  - bioconda
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - biopython>=1.85
+  - biotite=0.36
+  - pandas>=2.2.3
+  - foldseek=8.ef4e960=pl5321hb365157_0
+  - matplotlib<3.10
+  - pymol-open-source  # PyMOL from conda-forge
+  - gputil
+  - deepspeed
+  - gcc_linux-64
+  - libgcc-ng
+  - cudatoolkit=11.8
+  - cuda-nvcc=11.8
+  - cudnn
+  - pip:
+      - torch>=2.6
+      - torchvision
+      - torchaudio
+      - torchdata
+      - torchtext
+      - hydra-core>=1.3.2
+      - rootutils
+      - fair-esm  # ESM from FAIR (Facebook AI)
+      - dm-tree
+      - tabulate
+      - MDAnalysis
+      - tmtools
+      - psutil
+      - hydra-joblib-launcher
+      - ml_collections
