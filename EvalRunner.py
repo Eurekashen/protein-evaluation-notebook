@@ -305,7 +305,7 @@ class EvalRunner:
 
         return cluster_to_paths, paths_to_cluster
 
-    def get_reward(
+    def calc_metrics(
         self,
         decoy_pdb_dir: str,
         reference_pdb_path: str,
@@ -439,7 +439,7 @@ class EvalRunner:
         for pdb_path in pdb_path_list:
             sc_output_dir = os.path.join(pdb_path, "self_consistency")
             os.makedirs(sc_output_dir, exist_ok=True)
-            reward = self.get_reward(sc_output_dir, pdb_path)
+            reward = self.calc_metrics(sc_output_dir, pdb_path)
             rewards.append(reward)
 
         return rewards
@@ -457,8 +457,8 @@ def run(conf: DictConfig) -> None:
     os.makedirs(sc_output_dir, exist_ok=True)
 
     # run reward model
-    Reward_model = EvalRunner(conf)
-    reward = Reward_model.get_reward(sc_output_dir, pdb_path)
+    EvalModel = EvalRunner(conf)
+    reward = EvalModel.calc_metrics(sc_output_dir, pdb_path)
 
     # run reward model based on csv file
     # pdb_csv_path = "/home/shuaikes/server2/shuaikes/projects/frameflow_rl/inference_outputs/weights/pdb/published/unconditional/run_2024-10-21_01-26-05/length_70/sample_1/pdb_paths.csv"
