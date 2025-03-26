@@ -10,7 +10,7 @@ import shutil
 from datetime import datetime
 from biotite.sequence.io import fasta
 import GPUtil
-from typing import Optional
+from typing import Optional, Union, List
 
 from analysis import utils as au
 from analysis import metrics
@@ -18,6 +18,7 @@ from data import utils as du
 from omegaconf import DictConfig, OmegaConf
 from openfold.data import data_transforms
 import esm
+from pathlib import Path
 
 
 class EvalRunner:
