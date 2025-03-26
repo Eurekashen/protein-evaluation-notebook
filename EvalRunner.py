@@ -11,7 +11,6 @@ from datetime import datetime
 from biotite.sequence.io import fasta
 import GPUtil
 from typing import Optional, Union, List
-
 from analysis import utils as au
 from analysis import metrics
 from data import utils as du
@@ -19,6 +18,12 @@ from omegaconf import DictConfig, OmegaConf
 from openfold.data import data_transforms
 import esm
 from pathlib import Path
+import mdtraj as md
+from openfold.np import residue_constants
+from tmtools import tm_align
+from openfold.utils.superimposition import superimpose
+from tqdm import tqdm
+import re
 
 
 class EvalRunner:
@@ -30,31 +35,53 @@ class EvalRunner:
 
         self._log = logging.getLogger(__name__)
         self._conf = conf
-        self._infer_conf = conf.inference
-        # self._diff_conf = self._infer_conf.diffusion
-        self._sample_conf = self._infer_conf.samples
 
         # Set random seed
-        self._rng = np.random.default_rng(self._infer_conf.seed)
+        self._rng = np.random.default_rng(self._conf.seed)
 
         # Set model hub directory for ESMFold.
-        torch.hub.set_dir(self._infer_conf.pt_hub_dir)
+        torch.hub.set_dir(self._conf.pt_hub_dir)
 
         # Set-up accelerator
-        if torch.cuda.is_available():
-            available_gpus = "".join(
-                [str(x) for x in GPUtil.getAvailable(order="memory", limit=8)]
-            )
-            self.device = f"cuda:{available_gpus[0]}"
-        else:
-            self.device = "cpu"
+        # if torch.cuda.is_available():
+        #     available_gpus = "".join(
+        #         [str(x) for x in GPUtil.getAvailable(order="memory", limit=8)]
+        #     )
+        #     self.device = f"cuda:{available_gpus[0]}"
+        # else:
+        #     self.device = "cpu"
+
+        self.device = "cpu"
+
         self._log.info(f"Using device: {self.device}")
 
-        self._pmpnn_dir = self._infer_conf.pmpnn_dir
+        self._pmpnn_dir = self._conf.pmpnn_dir
 
         # Load ESMFold model
-        self._folding_model = esm.pretrained.esmfold_v1().eval()
-        self._folding_model = self._folding_model.to(self.device)
+        # self._folding_model = esm.pretrained.esmfold_v1().eval()
+        # self._folding_model = self._folding_model.to(self.device)
+
+        self._foldseek_database = self._conf.foldseek_database
+
+    def _calc_bb_rmsd(self, mask, sample_bb_pos, folded_bb_pos):
+        aligned_rmsd = superimpose(
+            torch.tensor(sample_bb_pos)[None],
+            torch.tensor(folded_bb_pos[None]),
+            mask[:, None].repeat(1, 3).reshape(-1),
+        )
+        return aligned_rmsd[1].item()
+
+    def _calc_ca_rmsd(self, mask, sample_bb_pos, folded_bb_pos):
+        aligned_rmsd = superimpose(
+            torch.tensor(sample_bb_pos)[None],
+            torch.tensor(folded_bb_pos[None]),
+            mask.reshape(-1),
+        )
+        return aligned_rmsd[1].item()
+
+    def calc_tm_score(self, pos_1, pos_2, seq_1, seq_2):
+        tm_results = tm_align(pos_1, pos_2, seq_1, seq_2)
+        return tm_results.tm_norm_chain1, tm_results.tm_norm_chain2
 
     def pdbTM(
         self,
@@ -86,14 +113,13 @@ class EvalRunner:
         `top_pdbTM`: The highest pdbTM value among the top three targets hit by Foldseek.
         """
         # Handling multiprocessing
-        base_tmp_path = "../tmp/"
+        base_tmp_path = "./tmp/"
         tmp_path = os.path.join(base_tmp_path, f"process_{process_id}")
         os.makedirs(tmp_path, exist_ok=True)
 
-        # pdb100 = "~/zzq/foldseek/database/pdb100/pdb"
         # Check whether input is a directory or a single file
         if ".pdb" in input:
-            output_file = f"./{os.path.basename(input)}.m8"
+            output_file = f"./{os.path.basename(input)}_{process_id}.m8"
 
             cmd = f"foldseek easy-search \
                     {input} \
@@ -128,78 +154,6 @@ class EvalRunner:
             return None
 
         return top_pdbTM
-
-    def calculate_novelty(
-        self,
-        input_csv: Union[str, Path, pd.DataFrame],
-        foldseek_database_path: Union[str, Path],
-        max_workers: int,
-        cpu_threshold: float,
-    ) -> pd.DataFrame:
-        """
-        Novelty Calculation.
-
-        We provide two options for calculating the pdbTM value:
-        1. Indepentdent Mode: Calculate the pdbTM value of a single input PDB file.
-            Example usage: python pdbTM.py -c {example}.pdb
-        2. Batch Mode: Calculate pdbTM of a number of PDBs once in a time.
-            Take a csv file with 'backbone_path' as the path of PDB files as input.
-            A csv file will be returned with 'pdbTM' column filled with corresponding values.
-
-        Args:
-
-        Independent Mode:
-        [Required]
-        '-c', '--calculate': Path of PDB file you want to calculate pdbTM value of.
-
-        Batch Mode:
-        [Required]
-        '-i', '--input': Path of input csv file you want to calculate with.
-        [Optional]
-        '-o', '--output': Path of output csv file with calculated pdbTM values.
-                            Default = "novelty_results.csv"
-        """
-
-        df = (
-            pd.read_csv(input_csv).copy()
-            if isinstance(input_csv, str) or isinstance(input_csv, Path)
-            else input_csv.copy()
-        )
-        if "pdbTM" not in df.columns:
-            df.loc[:, "pdbTM"] = None
-
-        futures = {}
-        if max_workers > 0:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                process_id = 0
-                for backbone_path in df["backbone_path"].unique():
-                    if pd.isna(
-                        df[df["backbone_path"] == backbone_path]["pdbTM"].iloc[0]
-                    ):
-                        while psutil.cpu_percent(interval=1) > cpu_threshold:
-                            time.sleep(0.5)
-                        future = executor.submit(
-                            pdbTM, backbone_path, foldseek_database_path, process_id
-                        )
-                        futures[future] = backbone_path
-                        process_id += 1
-
-                for future in as_completed(futures):
-                    pdbTM_value = future.result()
-                    backbone_path = futures[future]
-                    df.loc[df["backbone_path"] == backbone_path, "pdbTM"] = pdbTM_value
-
-                # df['pdbTM'] = df['backbone_path'].apply(lambda x: pdbTM_values[x])
-        else:
-            for process_id_placeholder, backbone_path in enumerate(
-                df["backbone_path"].unique()
-            ):
-                pdbTM_value = pdbTM(
-                    backbone_path, foldseek_database_path, process_id_placeholder
-                )
-                df.loc[df["backbone_path"] == backbone_path, "pdbTM"] = pdbTM_value
-
-        return df
 
     def calc_mdtraj_metrics(self, pdb_path: str):
         try:
@@ -268,45 +222,7 @@ class EvalRunner:
                     shutil.copy(centroid_path, os.path.join(designable_dir, copy_name))
         return clusters
 
-    def extract_clusters_from_maxcluster_out(self, file_path):
-        # Extracts cluster information from the stdout of a maxcluster run
-        cluster_to_paths = {}
-        paths_to_cluster = {}
-        read_mode = False
-        with open(file_path) as file:
-            lines = file.readlines()
-            for line in lines:
-                if line == "INFO  : Item     Cluster\n":
-                    read_mode = True
-                    continue
-
-                if line == "INFO  : ======================================\n":
-                    read_mode = False
-
-                if read_mode:
-                    # Define a regex pattern to match the second number and the path
-                    pattern = r"INFO\s+:\s+\d+\s:\s+(\d+)\s+(\S+)"
-
-                    # Use re.search to find the first match in the string
-                    match = re.search(pattern, line)
-
-                    # Check if a match is found
-                    if match:
-                        # Extract the second number and the path
-                        cluster_id = match.group(1)
-                        path = match.group(2)
-                        if cluster_id not in cluster_to_paths:
-                            cluster_to_paths[cluster_id] = [path]
-                        else:
-                            cluster_to_paths[cluster_id].append(path)
-                        paths_to_cluster[path] = cluster_id
-
-                    else:
-                        raise ValueError(f"Could not parse line: {line}")
-
-        return cluster_to_paths, paths_to_cluster
-
-    def calc_all_metrics(
+    def calc_designability(
         self,
         decoy_pdb_dir: str,
         reference_pdb_path: str,
@@ -352,9 +268,7 @@ class EvalRunner:
             "--batch_size",
             "1",
         ]
-        # if self._infer_conf.gpu_id is not None:
-        #     pmpnn_args.append('--device')
-        #     pmpnn_args.append(str(self._infer_conf.gpu_id))
+
         while ret < 0:
             try:
                 process = subprocess.Popen(
@@ -392,14 +306,25 @@ class EvalRunner:
             sample_seq = du.aatype_to_seq(sample_feats["aatype"])
 
             # Calculate scTM of ESMFold outputs with reference protein
-            _, tm_score = metrics.calc_tm_score(
+            _, tm_score = self.calc_tm_score(
                 sample_feats["bb_positions"],
                 esmf_feats["bb_positions"],
                 sample_seq,
                 sample_seq,
             )
 
+            res_mask = torch.ones(sample_feats["bb_positions"].shape[0])
+
+            bb_rmsd = self._calc_bb_rmsd(
+                res_mask, sample_feats["bb_positions"], esmf_feats["bb_positions"]
+            )
+            ca_rmsd = self._calc_ca_rmsd(
+                res_mask, sample_feats["bb_positions"], esmf_feats["bb_positions"]
+            )
+
             mpnn_results["tm_score"].append(tm_score)
+            mpnn_results["bb_rmsd"].append(bb_rmsd)
+            mpnn_results["ca_rmsd"].append(ca_rmsd)
             mpnn_results["sample_path"].append(esmf_sample_path)
             mpnn_results["header"].append(header)
             mpnn_results["sequence"].append(string)
@@ -410,15 +335,42 @@ class EvalRunner:
         mpnn_results = pd.DataFrame(mpnn_results)
         mpnn_results.to_csv(csv_path)
 
+        return mpnn_results
+
+    def calc_all_metrics(
+        self,
+        decoy_pdb_dir: str,
+        reference_pdb_path: str,
+    ):
+
+        print("Calculating all metrics...")
+        print(
+            "##########################################################################"
+        )
+        print("Calculating designability...")
+        # calc self-consistency results
+        sc_results = self.calc_designability(decoy_pdb_dir, reference_pdb_path)
+        print(sc_results)
+        print(
+            "##########################################################################"
+        )
+        print("Calculating substructure ratio...")
         # calc substructure ratio
-        pdb_path = os.path.join(decoy_pdb_dir, "sample.pdb")
+        pdb_path = os.path.join(reference_pdb_path, "sample.pdb")
         calc_ratio = self.calc_mdtraj_metrics(pdb_path)
         # save to csv, for debugging
         df = pd.DataFrame(calc_ratio, index=[0])
         print(df)
-
-        # designability_reward = mpnn_results["tm_score"].mean()
-        # return designability_reward
+        print(
+            "##########################################################################"
+        )
+        print("Calculating novelty (pdbTM)...")
+        # calculate novelty (pdbTM)
+        foldseek_database = self._foldseek_database
+        value = self.pdbTM(pdb_path, foldseek_database, 1)
+        print(
+            f"TM-Score between {os.path.basename(pdb_path)} and its closest protein in PDB is {value}."
+        )
 
     def run_folding(self, sequence, save_path):
         """Run ESMFold on sequence."""
@@ -436,22 +388,49 @@ class EvalRunner:
             Path to the csv file containing the pdb paths
         """
 
-        pdb_path_list = pd.read_csv(pdb_csv_path)
-        rewards = []
-        for pdb_path in pdb_path_list:
+        df = pd.read_csv(pdb_csv_path, header=None)
+
+        pdb_path_list = df[0].tolist()
+
+        # calculate self-consistency score
+        sc_results = []
+        for pdb_path in tqdm(pdb_path_list):
             sc_output_dir = os.path.join(pdb_path, "self_consistency")
             os.makedirs(sc_output_dir, exist_ok=True)
-            reward = self.calc_metrics(sc_output_dir, pdb_path)
-            rewards.append(reward)
+            sc_results.append(self.calc_designability(sc_output_dir, pdb_path))
 
-        return rewards
+        # calculate substructure ratio
+        sub_ratio = []
+        for pdb_path in tqdm(pdb_path_list):
+            sub_ratio.append(self.calc_mdtraj_metrics(pdb_path))
+
+        # calculate novelty (pdbTM)
+        novelty_result = []
+        process_id = 0
+        for pdb_path in tqdm(pdb_path_list):
+            novelty_result.append(
+                self.pdbTM(pdb_path, self._foldseek_database, process_id)
+            )
+            process_id += 1
+
+        # designable file path (scRMSD<2)
+
+        # log_msg("Running clustering")
+        cluster_dir = os.path.join(Path(pdb_csv_path).parent, "cluster")
+        os.makedirs(cluster_dir, exist_ok=True)
+        # all_metrics = pd.read_csv(metric_path)
+        designable_paths = pdb_path_list
+        designable_file_path = os.path.join(cluster_dir, "designable_paths.txt")
+        with open(designable_file_path, "w") as f:
+            f.write("\n".join(designable_paths))
+
+        clusters = self.run_max_cluster(designable_file_path, cluster_dir)
+
+        return sc_results, sub_ratio, novelty_result, clusters
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="_inference")
+@hydra.main(version_base=None, config_path="configs", config_name="evaluation")
 def run(conf: DictConfig) -> None:
-
-    print("Test designability")
-    start_time = time.time()
 
     # Example pdb path
     pdb_path = "/home/shuaikes/Project/protein-evaluation-notebook/example_data/length_70/sample_0/"
@@ -460,15 +439,13 @@ def run(conf: DictConfig) -> None:
 
     # run reward model
     EvalModel = EvalRunner(conf)
-    reward = EvalModel.calc_all_metrics(sc_output_dir, pdb_path)
+    # EvalModel.calc_all_metrics(sc_output_dir, pdb_path)
 
     # run reward model based on csv file
-    # pdb_csv_path = "/home/shuaikes/server2/shuaikes/projects/frameflow_rl/inference_outputs/weights/pdb/published/unconditional/run_2024-10-21_01-26-05/length_70/sample_1/pdb_paths.csv"
-    # reward = Reward_model.get_designability_rewards(pdb_csv_path)
-
-    elapsed_time = time.time() - start_time
-    print(f"Finished in {elapsed_time:.2f}s")
-    print(reward)
+    pdb_csv_path = "/home/shuaikes/Project/protein-evaluation-notebook/pdb_path.csv"
+    sc_results, sub_ratio, novelty_result, clusters = EvalModel.calc_metrics_from_csv(
+        pdb_csv_path
+    )
 
 
 if __name__ == "__main__":

@@ -173,4 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-/outputs
+outputs/
+foldseek_database/
+tmp/
+cluster/
