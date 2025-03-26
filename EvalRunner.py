@@ -306,7 +306,7 @@ class EvalRunner:
 
         return cluster_to_paths, paths_to_cluster
 
-    def calc_metrics(
+    def calc_all_metrics(
         self,
         decoy_pdb_dir: str,
         reference_pdb_path: str,
@@ -415,9 +415,10 @@ class EvalRunner:
         calc_ratio = self.calc_mdtraj_metrics(pdb_path)
         # save to csv, for debugging
         df = pd.DataFrame(calc_ratio, index=[0])
+        print(df)
 
-        designability_reward = mpnn_results["tm_score"].mean()
-        return designability_reward
+        # designability_reward = mpnn_results["tm_score"].mean()
+        # return designability_reward
 
     def run_folding(self, sequence, save_path):
         """Run ESMFold on sequence."""
@@ -428,7 +429,7 @@ class EvalRunner:
             f.write(output)
         return output
 
-    def get_designability_rewards(self, pdb_csv_path):
+    def calc_metrics_from_csv(self, pdb_csv_path):
         """Get designability reward from csv file.
 
         pdb_csv_path : str
@@ -459,7 +460,7 @@ def run(conf: DictConfig) -> None:
 
     # run reward model
     EvalModel = EvalRunner(conf)
-    reward = EvalModel.calc_metrics(sc_output_dir, pdb_path)
+    reward = EvalModel.calc_all_metrics(sc_output_dir, pdb_path)
 
     # run reward model based on csv file
     # pdb_csv_path = "/home/shuaikes/server2/shuaikes/projects/frameflow_rl/inference_outputs/weights/pdb/published/unconditional/run_2024-10-21_01-26-05/length_70/sample_1/pdb_paths.csv"
