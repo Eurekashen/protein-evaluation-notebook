@@ -7,7 +7,7 @@ import string
 import pickle
 import os
 import torch
-from torch_scatter import scatter_add, scatter
+# from torch_scatter import scatter_add, scatter
 from Bio.PDB.Chain import Chain
 from data import protein
 import dataclasses
