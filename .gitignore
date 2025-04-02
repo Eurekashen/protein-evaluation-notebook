@@ -177,3 +177,7 @@ outputs/
 foldseek_database/
 tmp/
 cluster/
+esmfold.model
+finished_install
+.gitignore
+sample.pdb_1.m8

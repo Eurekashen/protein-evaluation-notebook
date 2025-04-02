@@ -318,6 +318,9 @@ class EvalRunner:
             "sample_path": [],
             "header": [],
             "sequence": [],
+            "ptm": [],
+            "plddt": [],
+            "pae": [],
         }
 
         esmf_dir = os.path.join(decoy_pdb_dir, "esmf")
@@ -328,9 +331,14 @@ class EvalRunner:
         )
         for i, (header, string) in enumerate(fasta_seqs.items()):
 
+            if i == 0:
+                continue
+            
             # Run ESMFold
             esmf_sample_path = os.path.join(esmf_dir, f"sample_{i}.pdb")
-            _ = self.run_folding(string, esmf_sample_path)
+            # _ = self.run_folding(string, esmf_sample_path)
+            ptm, plddt, pae = self.run_folding(string, esmf_sample_path)
+            
             esmf_feats = du.parse_pdb_feats("folded_sample", esmf_sample_path)
             sample_seq = du.aatype_to_seq(sample_feats["aatype"])
 
@@ -357,6 +365,9 @@ class EvalRunner:
             mpnn_results["sample_path"].append(esmf_sample_path)
             mpnn_results["header"].append(header)
             mpnn_results["sequence"].append(string)
+            mpnn_results["ptm"].append(ptm)
+            mpnn_results["plddt"].append(plddt)
+            mpnn_results["pae"].append(pae)
 
         # Save results to CSV
         csv_path = os.path.join(decoy_pdb_dir, "sc_results.csv")
@@ -464,7 +475,7 @@ class EvalRunner:
         seqs = sequence.split(":")
         lengths = [len(s) for s in seqs]
         length = sum(lengths)
-        print("length", length)
+        # print("length", length)
 
         u_seqs = list(set(seqs))
         if len(seqs) == 1:
@@ -482,6 +493,8 @@ class EvalRunner:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
+            # Warning: this will overwrite the default dtype
+            torch.set_default_dtype(torch.float32)
             model = torch.load(self.model_name, weights_only=False)
             model.eval().cuda().requires_grad_(False)
             model_name_ = self.model_name
@@ -505,13 +518,16 @@ class EvalRunner:
         ptm = output["ptm"][0]
         plddt = output["plddt"][0, ..., 1].mean()
         O = parse_output(output)
-        print(f"ptm: {ptm:.3f} plddt: {plddt:.3f}")
-        os.system(f"mkdir -p {ID}")
-        prefix = f"{ID}/ptm{ptm:.3f}_r{num_recycles}_default"
-        np.savetxt(f"{prefix}.pae.txt", O["pae"], "%.3f")
-        with open(f"{prefix}.pdb", "w") as out:
+        # print(f"ptm: {ptm:.3f} plddt: {plddt:.3f}")
+        # os.system(f"mkdir -p {ID}")
+        # prefix = f"{ID}/ptm{ptm:.3f}_r{num_recycles}_default"
+        # np.savetxt(f"{prefix}.pae.txt", O["pae"], "%.3f")
+        
+        with open(save_path, "w") as out:
             out.write(pdb_str)
 
+        return ptm, plddt, O["pae"].mean()
+        
     def calc_diversity(self, pdb_csv_path):
         """Get diversity from csv file.
 
@@ -541,7 +557,7 @@ class EvalRunner:
 def run(conf: DictConfig) -> None:
 
     # Example pdb path
-    pdb_path = "/home/shuaikes/Project/protein-evaluation-notebook/example_data/length_70/sample_0/"
+    pdb_path = "/home/shuaikes/server2/shuaikes/projects/protein-evaluation-notebook/example_data/length_70/sample_0/"
     sc_output_dir = os.path.join(pdb_path, "self_consistency")
     os.makedirs(sc_output_dir, exist_ok=True)
 
